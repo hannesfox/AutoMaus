@@ -1,0 +1,143 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Paket schnüren
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/automaus.exe dist/AutoMAUS.exe
+          Copy-Item README.md dist/README.md
+          Compress-Archive -Path dist/* -DestinationPath AutoMAUS-windows-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoMAUS-windows-x64
+          path: AutoMAUS-windows-x64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS (.app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Build (Apple Silicon + Intel)
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Universal-Binary erzeugen
+        run: |
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/automaus \
+            target/x86_64-apple-darwin/release/automaus \
+            -output target/universal-apple-darwin/release/automaus
+
+      - name: .app-Bundle erstellen
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          APP="dist/AutoMAUS.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/universal-apple-darwin/release/automaus "$APP/Contents/MacOS/AutoMAUS"
+          cp assets/icon.icns "$APP/Contents/Resources/icon.icns"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>AutoMAUS</string>
+            <key>CFBundleDisplayName</key>
+            <string>AutoMAUS</string>
+            <key>CFBundleIdentifier</key>
+            <string>de.hannesfox.automaus</string>
+            <key>CFBundleVersion</key>
+            <string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundleExecutable</key>
+            <string>AutoMAUS</string>
+            <key>CFBundleIconFile</key>
+            <string>icon.icns</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>11.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Signieren (ad-hoc) und zippen
+        run: |
+          codesign --force --deep --sign - dist/AutoMAUS.app
+          ditto -c -k --keepParent dist/AutoMAUS.app AutoMAUS-macos-universal.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoMAUS-macos-universal
+          path: AutoMAUS-macos-universal.zip
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Artifacts herunterladen
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Release veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/AutoMAUS-windows-x64/AutoMAUS-windows-x64.zip
+            artifacts/AutoMAUS-macos-universal/AutoMAUS-macos-universal.zip
+          generate_release_notes: true
