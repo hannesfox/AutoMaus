@@ -1,0 +1,2 @@
+# AutoMaus
+Desktop Automation 
